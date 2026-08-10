@@ -30,7 +30,10 @@ def get_bus_service() -> BusService:
         "Search for available buses between two Indian cities on a given date.\n\n"
         "City names are automatically resolved to their internal RedBus IDs — "
         "no need to look up numeric IDs.\n\n"
-        "**Date format:** `DD-Mon-YYYY` — e.g. `21-Aug-2026`\n\n"
+        "**Date formats accepted:**\n"
+        "- `DD-MM-YYYY` — e.g. `26-08-2026` (auto-converted)\n"
+        "- `YYYY-MM-DD` — e.g. `2026-08-26` (auto-converted)\n"
+        "- `DD-Mon-YYYY` — e.g. `26-Aug-2026` (RedBus native)\n\n"
         "**Tip:** Use the standard English city name as it appears on RedBus "
         "(e.g. `Chennai`, `Bangalore`, `Rajapalayam`)."
     ),
@@ -54,8 +57,13 @@ def search_buses(
     ),
     journey_date: str = Query(
         ...,
-        description="Date of journey in DD-Mon-YYYY format",
-        examples=["21-Aug-2026"],
+        description=(
+            "Date of journey. Accepted formats:\n"
+            "- `DD-MM-YYYY` (e.g. `26-08-2026`) — auto-converted\n"
+            "- `YYYY-MM-DD` (e.g. `2026-08-26`) — auto-converted\n"
+            "- `DD-Mon-YYYY` (e.g. `26-Aug-2026`) — RedBus native"
+        ),
+        examples=["26-08-2026"],
     ),
     limit: int = Query(
         default=10,

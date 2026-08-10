@@ -27,6 +27,7 @@ Flow:
 import logging
 import sys
 import os
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 # Make resolver and provider importable from the bus/ root
@@ -124,7 +125,10 @@ class BusService:
         Args:
             source:       Origin city name (e.g. 'Rajapalayam', 'Chennai').
             destination:  Destination city name (e.g. 'Chennai', 'Bangalore').
-            journey_date: Date of journey in DD-Mon-YYYY format (e.g. '21-Aug-2026').
+            journey_date: Date of journey. Accepted formats:
+                          - DD-Mon-YYYY  (e.g. '21-Aug-2026')   ← RedBus native
+                          - DD-MM-YYYY   (e.g. '21-08-2026')    ← auto-converted
+                          - YYYY-MM-DD   (e.g. '2026-08-21')    ← auto-converted
             limit:        Maximum number of results to return (applied after provider).
             offset:       Number of results to skip (for pagination).
 
@@ -132,15 +136,18 @@ class BusService:
             BusSearchData — fully normalised and typed.
 
         Raises:
-            CityNotFoundError:          City name could not be resolved to a RedBus ID.
-            InvalidCityRouteError:      No RedBus route page for this city combination.
+            CityNotFoundError:           City name could not be resolved to a RedBus ID.
+            InvalidCityRouteError:       No RedBus route page for this city combination.
             BusProviderUnavailableError: Provider timeout, connection, or session issue.
-            BusSearchError:             Parsing or unexpected provider failure.
-            BusNoResultsError:          Valid search but zero buses on this route/date.
+            BusSearchError:              Parsing or unexpected provider failure or bad date.
+            BusNoResultsError:           Valid search but zero buses on this route/date.
         """
+        # ── Normalise date to DD-Mon-YYYY before anything else ─────────────────
+        normalised_date = self._normalise_date(journey_date)
+
         logger.info(
             f"BusService.search: '{source}' → '{destination}'  "
-            f"date={journey_date}  limit={limit}  offset={offset}"
+            f"date={normalised_date} (raw={journey_date})  limit={limit}  offset={offset}"
         )
 
         # ── Step 1: Resolve city names → IDs ──────────────────────────────────
@@ -161,7 +168,7 @@ class BusService:
             raw = _provider.search(
                 from_city=source_id,
                 to_city=destination_id,
-                doj=journey_date,
+                doj=normalised_date,
             )
         except (RedbusTimeoutError, RedbusConnectionError, RedbusSessionExpiredError) as exc:
             logger.warning(f"Provider unavailable: {exc}")
@@ -192,6 +199,50 @@ class BusService:
             limit=limit,
             offset=offset,
             buses=normalised_buses,
+        )
+
+    # ── Date normalisation ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _normalise_date(raw_date: str) -> str:
+        """
+        Convert any recognised date format to DD-Mon-YYYY required by the RedBus API.
+
+        Supported inputs:
+            '26-08-2026'   (DD-MM-YYYY)   → '26-Aug-2026'
+            '2026-08-26'   (YYYY-MM-DD)   → '26-Aug-2026'
+            '26-Aug-2026'  (DD-Mon-YYYY)  → '26-Aug-2026'  (pass-through)
+
+        Raises:
+            BusSearchError: If the date string cannot be parsed.
+        """
+        raw = raw_date.strip()
+
+        # Already in DD-Mon-YYYY — pass through unchanged
+        try:
+            dt = datetime.strptime(raw, "%d-%b-%Y")
+            return dt.strftime("%d-%b-%Y")
+        except ValueError:
+            pass
+
+        # Try DD-MM-YYYY
+        try:
+            dt = datetime.strptime(raw, "%d-%m-%Y")
+            return dt.strftime("%d-%b-%Y")
+        except ValueError:
+            pass
+
+        # Try YYYY-MM-DD
+        try:
+            dt = datetime.strptime(raw, "%Y-%m-%d")
+            return dt.strftime("%d-%b-%Y")
+        except ValueError:
+            pass
+
+        raise BusSearchError(
+            f"Unrecognised date format: '{raw_date}'. "
+            f"Use DD-MM-YYYY (26-08-2026), YYYY-MM-DD (2026-08-26), "
+            f"or DD-Mon-YYYY (26-Aug-2026)."
         )
 
     # ── City resolution ───────────────────────────────────────────────────────
