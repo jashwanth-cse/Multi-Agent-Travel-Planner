@@ -27,32 +27,34 @@ def get_bus_service() -> BusService:
     response_model=BusSearchResponse,
     summary="Search for buses",
     description=(
-        "Search for available buses between two RedBus city IDs on a given date. "
-        "Internally powered by the RedBus provider via curl_cffi Chrome impersonation.\n\n"
-        "**How to find city IDs:**\n"
-        "Open redbus.in → search a route → the URL will contain "
-        "`fromCityId=<ID>&toCityId=<ID>`. Use those values here."
+        "Search for available buses between two Indian cities on a given date.\n\n"
+        "City names are automatically resolved to their internal RedBus IDs — "
+        "no need to look up numeric IDs.\n\n"
+        "**Date format:** `DD-Mon-YYYY` — e.g. `21-Aug-2026`\n\n"
+        "**Tip:** Use the standard English city name as it appears on RedBus "
+        "(e.g. `Chennai`, `Bangalore`, `Rajapalayam`)."
     ),
     responses={
-        404: {"model": ErrorResponse, "description": "No buses found for this route / date"},
+        404: {"model": ErrorResponse, "description": "City not found or no buses on this route/date"},
+        400: {"model": ErrorResponse, "description": "Invalid city combination"},
         503: {"model": ErrorResponse, "description": "Bus provider temporarily unavailable"},
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
 )
 def search_buses(
-    source_id: int = Query(
+    source: str = Query(
         ...,
-        description="RedBus numeric city ID for the origin (e.g. 497 for Rajapalayam)",
-        examples=[497],
+        description="Origin city name (e.g. 'Rajapalayam', 'Chennai', 'Mumbai')",
+        examples=["Rajapalayam"],
     ),
-    destination_id: int = Query(
+    destination: str = Query(
         ...,
-        description="RedBus numeric city ID for the destination (e.g. 141 for Coimbatore)",
-        examples=[141],
+        description="Destination city name (e.g. 'Chennai', 'Bangalore', 'Pune')",
+        examples=["Chennai"],
     ),
     journey_date: str = Query(
         ...,
-        description="Date of journey in DD-Mon-YYYY format (e.g. 21-Aug-2026)",
+        description="Date of journey in DD-Mon-YYYY format",
         examples=["21-Aug-2026"],
     ),
     limit: int = Query(
@@ -71,15 +73,15 @@ def search_buses(
     """
     Search for buses between two cities.
 
-    - **source_id**: RedBus city ID for the origin
-    - **destination_id**: RedBus city ID for the destination
-    - **journey_date**: Date in `DD-Mon-YYYY` format
+    - **source**: Origin city name
+    - **destination**: Destination city name
+    - **journey_date**: Date in `DD-Mon-YYYY` format (e.g. `21-Aug-2026`)
     - **limit**: Page size (max 50)
     - **offset**: Pagination offset
     """
     data = bus_service.search(
-        source_id=source_id,
-        destination_id=destination_id,
+        source=source,
+        destination=destination,
         journey_date=journey_date,
         limit=limit,
         offset=offset,

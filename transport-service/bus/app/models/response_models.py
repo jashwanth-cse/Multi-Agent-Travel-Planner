@@ -114,10 +114,10 @@ class Bus(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class BusSearchData(BaseModel):
-    source_id:      int = Field(..., description="RedBus city ID for origin")
-    destination_id: int = Field(..., description="RedBus city ID for destination")
+    source:         str = Field(..., description="Resolved origin city name")
+    destination:    str = Field(..., description="Resolved destination city name")
     journey_date:   str = Field(..., description="Date of journey as provided")
-    total_buses:    int = Field(..., description="Total number of buses in this response page")
+    total_buses:    int = Field(..., description="Total number of buses for this route")
     limit:          int = Field(..., description="Page size limit applied")
     offset:         int = Field(..., description="Page offset applied")
     buses:          List[Bus] = Field(default_factory=list)

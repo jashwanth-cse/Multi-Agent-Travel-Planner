@@ -22,6 +22,8 @@ from app.exceptions import (
     BusProviderUnavailableError,
     BusSearchError,
     BusNoResultsError,
+    CityNotFoundError,
+    InvalidCityRouteError,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -62,6 +64,20 @@ async def log_requests(request: Request, call_next):
     return response
 
 # ── Exception Handlers ────────────────────────────────────────────────────────
+@app.exception_handler(CityNotFoundError)
+async def city_not_found_handler(request: Request, exc: CityNotFoundError):
+    return JSONResponse(
+        status_code=404,
+        content={"success": False, "message": str(exc)},
+    )
+
+@app.exception_handler(InvalidCityRouteError)
+async def invalid_city_route_handler(request: Request, exc: InvalidCityRouteError):
+    return JSONResponse(
+        status_code=400,
+        content={"success": False, "message": str(exc)},
+    )
+
 @app.exception_handler(BusNoResultsError)
 async def no_results_handler(request: Request, exc: BusNoResultsError):
     return JSONResponse(

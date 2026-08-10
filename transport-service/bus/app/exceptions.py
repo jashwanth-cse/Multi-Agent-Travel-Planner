@@ -20,3 +20,11 @@ class BusProviderUnavailableError(BusServiceError):
 
 class BusNoResultsError(BusServiceError):
     """Raised when no buses are found for the requested route and date."""
+
+
+class CityNotFoundError(BusServiceError):
+    """Raised when a city name cannot be resolved to a RedBus city ID."""
+
+
+class InvalidCityRouteError(BusServiceError):
+    """Raised when the source/destination combination is not a valid RedBus route."""
