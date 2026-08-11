@@ -6,13 +6,24 @@ and parsing the raw JSON response into a clean, strictly typed structure.
 """
 
 import requests
-from typing import Dict, List, Optional, Any
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional, Any, Tuple
 
 from app.config import config
 from app.services.station_service import StationService
+from app.services.availability_service import AvailabilityService
+
+logger = logging.getLogger(__name__)
 
 # Global session for connection pooling
 _session = requests.Session()
+
+# Shared availability service singleton
+_availability_service = AvailabilityService()
+
+# Max concurrent live availability requests per search call
+_MAX_CONCURRENT_AVAILABILITY = 5
 
 class TrainService:
     """
@@ -78,7 +89,8 @@ class TrainService:
         sort_by: str = "departure",
         max_fare: Optional[int] = None,
         min_rating: Optional[float] = None,
-        pantry: Optional[bool] = None
+        pantry: Optional[bool] = None,
+        quota: str = "GN",
     ) -> Dict[str, Any]:
         """
         Main entry point to search for trains.
@@ -97,17 +109,27 @@ class TrainService:
             trains_data = payload.get("nearbyTrains", [])
             result_type = "nearby"
 
+        # ── Step 1: Parse all trains ───────────────────────────────────────────
         parsed_trains = []
         for train in trains_data:
-            parsed_train = self._parse_train(train, source_station, dest_station)
-            
+            parsed_trains.append(self._parse_train(train, source_station, dest_station))
+
+        # ── Step 2: Enrich missing availability (concurrent, before filtering) ─
+        # Determine the classes that will survive class-filtering so we only
+        # fetch live availability for classes the user will actually see.
+        target_class = travel_class.upper() if travel_class else None
+        self._enrich_availability(parsed_trains, journey_date, quota, target_class)
+
+        # ── Step 3: Filter, recommend, sort ───────────────────────────────────
+        result_trains = []
+        for parsed_train in parsed_trains:
             # Filter classes
             parsed_train["classes"] = self._filter_classes(parsed_train["classes"], travel_class)
-            
+
             # Re-evaluate lowest fare and recommendation after filtering
             parsed_train["recommended_class"] = self._recommend_class(parsed_train["classes"])
             parsed_train["lowest_fare"] = self._calculate_lowest_fare(parsed_train["classes"])
-            
+
             # Apply optional filters
             if max_fare is not None and parsed_train["lowest_fare"] > max_fare:
                 continue
@@ -115,20 +137,20 @@ class TrainService:
                 continue
             if pantry is not None and parsed_train["has_pantry"] != pantry:
                 continue
-            
+
             # Only include trains that still have matching classes after filter
             if parsed_train["classes"]:
-                parsed_trains.append(parsed_train)
+                result_trains.append(parsed_train)
 
         # Sort trains
-        parsed_trains = self._sort_trains(parsed_trains, sort_by)
+        result_trains = self._sort_trains(result_trains, sort_by)
 
         return {
             "result_type": result_type,
             "source": payload.get("sourceStationName") or source_station["station_name"],
             "destination": payload.get("destinationStationName") or dest_station["station_name"],
-            "total_trains": len(parsed_trains),
-            "trains": parsed_trains
+            "total_trains": len(result_trains),
+            "trains": result_trains,
         }
 
     # --------------------------------------------------------
@@ -189,17 +211,155 @@ class TrainService:
         
         is_bookable = "REGRET" not in str(availability).upper()
 
+        # Tag whether this class has real cached availability
+        has_availability = bool(str(availability).strip())
+
         return {
             "travel_class": class_name,
             "fare": fare,
             "availability": availability,
             "prediction": prediction,
-            "bookable": is_bookable
+            "bookable": is_bookable,
+            "availability_source": "cached" if has_availability else "pending",
         }
 
     # --------------------------------------------------------
-    # Static Utility Helpers
+    # Live Availability Enrichment
     # --------------------------------------------------------
+
+    @staticmethod
+    def _needs_enrichment(cls: Dict[str, Any]) -> bool:
+        """Return True if this class is missing availability and needs a live fetch."""
+        return not str(cls.get("availability", "")).strip()
+
+    def _enrich_availability(
+        self,
+        parsed_trains: List[Dict[str, Any]],
+        journey_date: str,
+        quota: str,
+        target_class: Optional[str],
+    ) -> None:
+        """
+        Enriches classes that have empty availability by calling the live
+        availability API concurrently (up to _MAX_CONCURRENT_AVAILABILITY workers).
+
+        Rules:
+        - Only fetches for classes with blank/null availability.
+        - Skips classes that won't survive class-filter (target_class filter).
+        - Uses train["from"]["code"] and train["to"]["code"] as station codes.
+        - Deduplicates identical (train_no, src, dst, cls, date, quota) combos.
+        - A single failure never aborts the whole search.
+        - Updates classes in-place.
+        """
+        # Build the work list: (train_idx, class_idx, key_tuple)
+        work: List[Tuple[int, int, Tuple]] = []
+        seen_keys = set()
+
+        for t_idx, train in enumerate(parsed_trains):
+            train_no = train["train_number"]
+            src_code = train["from"]["code"]
+            dst_code = train["to"]["code"]
+
+            for c_idx, cls in enumerate(train["classes"]):
+                class_name = cls["travel_class"]
+
+                # Skip if class won't survive filter
+                if target_class and class_name != target_class:
+                    continue
+
+                # Skip if availability is already present
+                if not self._needs_enrichment(cls):
+                    cls["availability_source"] = "cached"
+                    continue
+
+                key = (train_no, src_code, dst_code, class_name, journey_date, quota)
+                if key in seen_keys:
+                    # Will be filled by the canonical entry; mark as pending
+                    continue
+                seen_keys.add(key)
+                work.append((t_idx, c_idx, key))
+
+        if not work:
+            return
+
+        logger.info(
+            f"TrainService: enriching availability for {len(work)} class(es) concurrently "
+            f"(max={_MAX_CONCURRENT_AVAILABILITY} workers)"
+        )
+
+        # Maps key → live result for dedup sharing
+        results: Dict[Tuple, Dict[str, Any]] = {}
+
+        def fetch(key: Tuple) -> Tuple[Tuple, Dict[str, Any]]:
+            train_no, src, dst, cls_name, date, q = key
+            result = _availability_service.fetch_availability(
+                train_no=train_no,
+                source=src,
+                destination=dst,
+                travel_class=cls_name,
+                date=date,
+                quota=q,
+            )
+            return key, result
+
+        with ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_AVAILABILITY) as executor:
+            futures = {executor.submit(fetch, item[2]): item for item in work}
+            for future in as_completed(futures):
+                try:
+                    key, result = future.result()
+                    results[key] = result
+                except Exception as exc:
+                    key = futures[future][2]
+                    logger.warning(f"Live availability fetch failed for {key}: {exc}")
+                    results[key] = {"success": False, "data": None}
+
+        # Apply results back to classes (including dedup sharing)
+        for train in parsed_trains:
+            train_no = train["train_number"]
+            src_code = train["from"]["code"]
+            dst_code = train["to"]["code"]
+
+            for cls in train["classes"]:
+                class_name = cls["travel_class"]
+                if target_class and class_name != target_class:
+                    continue
+                if not self._needs_enrichment(cls):
+                    continue  # Already tagged "cached" above
+
+                key = (train_no, src_code, dst_code, class_name, journey_date, quota)
+                result = results.get(key)
+                self._apply_live_result(cls, result)
+
+    @staticmethod
+    def _apply_live_result(cls: Dict[str, Any], result: Optional[Dict[str, Any]]) -> None:
+        """
+        Apply a live availability result to a class dict.
+        Preserves the existing fare from the search response — does NOT overwrite it.
+        Sets availability_source to "live" on success, "unavailable" on failure.
+        """
+        if not result or not result.get("success") or not result.get("data"):
+            cls["availability_source"] = "unavailable"
+            cls["bookable"] = False
+            return
+
+        data = result["data"]
+        live_avail = str(data.get("availability") or "").strip()
+
+        if not live_avail:
+            cls["availability_source"] = "unavailable"
+            cls["bookable"] = False
+            return
+
+        cls["availability"]        = live_avail
+        cls["prediction"]          = int(data.get("prediction") or 0)
+        cls["bookable"]            = bool(data.get("booking_enabled", True))
+        cls["availability_source"] = "live"
+
+        # Re-evaluate bookable from availability string as a safety net
+        if "REGRET" in live_avail.upper():
+            cls["bookable"] = False
+
+
 
     @staticmethod
     def _calculate_lowest_fare(classes: List[Dict[str, Any]]) -> int:

@@ -24,6 +24,7 @@ def search_trains(
     maxFare: Optional[int] = Query(None, description="Maximum fare filter"),
     minRating: Optional[float] = Query(None, description="Minimum rating filter"),
     pantry: Optional[bool] = Query(None, description="Pantry availability filter"),
+    quota: str = Query("GN", description="Quota for live availability enrichment (default GN)"),
     train_service: TrainService = Depends(get_train_service)
 ):
     """
@@ -37,7 +38,8 @@ def search_trains(
         sort_by=sortBy,
         max_fare=maxFare,
         min_rating=minRating,
-        pantry=pantry
+        pantry=pantry,
+        quota=quota,
     )
     
     return TrainSearchResponse(

@@ -31,6 +31,7 @@ class TravelClass(BaseModel):
     availability: str
     prediction: int
     bookable: bool
+    availability_source: str = "cached"  # "cached" | "live" | "unavailable"
 
 class Train(BaseModel):
     train_number: str
