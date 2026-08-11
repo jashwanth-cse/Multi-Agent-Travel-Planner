@@ -76,6 +76,10 @@ def search_buses(
         ge=0,
         description="Number of results to skip for pagination",
     ),
+    sortBy: str = Query(
+        default="departure",
+        description="Sort order: 'fare' | 'departure' (default) | 'arrival' | 'duration'",
+    ),
     bus_service: BusService = Depends(get_bus_service),
 ):
     """
@@ -83,9 +87,10 @@ def search_buses(
 
     - **source**: Origin city name
     - **destination**: Destination city name
-    - **journey_date**: Date in `DD-Mon-YYYY` format (e.g. `21-Aug-2026`)
+    - **journey_date**: Date in `DD-MM-YYYY`, `YYYY-MM-DD`, or `DD-Mon-YYYY` format
     - **limit**: Page size (max 50)
     - **offset**: Pagination offset
+    - **sortBy**: Sort order — `fare`, `departure` (default), `arrival`, `duration`
     """
     data = bus_service.search(
         source=source,
@@ -93,6 +98,7 @@ def search_buses(
         journey_date=journey_date,
         limit=limit,
         offset=offset,
+        sort_by=sortBy,
     )
 
     return BusSearchResponse(

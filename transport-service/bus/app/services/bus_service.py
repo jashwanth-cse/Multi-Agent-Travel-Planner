@@ -118,6 +118,7 @@ class BusService:
         journey_date: str,
         limit: int = 10,
         offset: int = 0,
+        sort_by: str = "departure",
     ) -> BusSearchData:
         """
         Search for buses between two city names.
@@ -129,8 +130,13 @@ class BusService:
                           - DD-Mon-YYYY  (e.g. '21-Aug-2026')   ← RedBus native
                           - DD-MM-YYYY   (e.g. '21-08-2026')    ← auto-converted
                           - YYYY-MM-DD   (e.g. '2026-08-21')    ← auto-converted
-            limit:        Maximum number of results to return (applied after provider).
-            offset:       Number of results to skip (for pagination).
+            limit:        Maximum number of results to return (applied after sorting).
+            offset:       Number of results to skip (for pagination, applied after sorting).
+            sort_by:      Sort order. One of:
+                          - 'fare'      — ascending by minimum_fare
+                          - 'departure' — ascending by departure_time (default)
+                          - 'arrival'   — ascending by arrival_time
+                          - 'duration'  — ascending by duration_minutes
 
         Returns:
             BusSearchData — fully normalised and typed.
@@ -147,7 +153,8 @@ class BusService:
 
         logger.info(
             f"BusService.search: '{source}' → '{destination}'  "
-            f"date={normalised_date} (raw={journey_date})  limit={limit}  offset={offset}"
+            f"date={normalised_date} (raw={journey_date})  "
+            f"sort_by={sort_by}  limit={limit}  offset={offset}"
         )
 
         # ── Step 1: Resolve city names → IDs ──────────────────────────────────
@@ -180,7 +187,7 @@ class BusService:
             logger.error(f"Unexpected provider error: {exc}")
             raise BusSearchError(str(exc)) from exc
 
-        # ── Step 3: Normalise ─────────────────────────────────────────────────
+        # ── Step 3: Normalise, sort, paginate ────────────────────────────────
         all_buses = raw.get("buses", [])
 
         if not all_buses:
@@ -188,18 +195,62 @@ class BusService:
                 f"No buses found from '{source_name}' to '{dest_name}' on {journey_date}."
             )
 
-        paginated        = all_buses[offset: offset + limit]
-        normalised_buses = [self._normalise_bus(b) for b in paginated]
+        normalised_buses = [self._normalise_bus(b) for b in all_buses]
+
+        # Sort BEFORE pagination so limit/offset operate on sorted order
+        normalised_buses = self._sort_buses(normalised_buses, sort_by)
+
+        paginated = normalised_buses[offset: offset + limit]
 
         return BusSearchData(
             source=source_name,
             destination=dest_name,
             journey_date=journey_date,
-            total_buses=len(all_buses),
+            total_buses=len(normalised_buses),
             limit=limit,
             offset=offset,
-            buses=normalised_buses,
+            buses=paginated,
         )
+
+    # ── Sorting ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _sort_buses(buses: list, sort_by: str) -> list:
+        """
+        Sort a list of normalised Bus objects.
+
+        Keys:
+          'fare'      — ascending minimum_fare  (None treated as float-max)
+          'departure' — ascending departure_time string (ISO-like, sorts lexically)
+          'arrival'   — ascending arrival_time string
+          'duration'  — ascending duration_minutes (None treated as int-max)
+        """
+        key = sort_by.lower().strip()
+
+        if key == "fare":
+            return sorted(
+                buses,
+                key=lambda b: (b.minimum_fare if b.minimum_fare is not None else float("inf")),
+            )
+        if key == "departure":
+            return sorted(
+                buses,
+                key=lambda b: (str(b.departure_time or ""),),
+            )
+        if key == "arrival":
+            return sorted(
+                buses,
+                key=lambda b: (str(b.arrival_time or ""),),
+            )
+        if key == "duration":
+            return sorted(
+                buses,
+                key=lambda b: (b.duration_minutes if b.duration_minutes is not None else 999999),
+            )
+
+        # Unknown sort key — return as-is (no crash)
+        logger.warning(f"BusService: unknown sort_by='{sort_by}', returning unsorted.")
+        return buses
 
     # ── Date normalisation ────────────────────────────────────────────────────
 
